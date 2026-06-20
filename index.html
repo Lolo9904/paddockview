@@ -59,6 +59,7 @@
   .readout{display:flex;flex-wrap:wrap;gap:6px 18px;font-family:var(--mono);font-size:13px;padding:6px 2px 2px}
   .readout span{color:var(--muted)} .readout b{color:var(--ink)}
   #plot{width:100%}
+  #plot .u-over{touch-action:none}
   .maprow{display:grid;grid-template-columns:1fr 280px;gap:14px}
   @media(max-width:760px){.maprow{grid-template-columns:1fr}}
   #gps{width:100%;height:320px;display:block;background:#0a0d11;border-radius:8px;touch-action:none}
@@ -78,7 +79,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><b>Paddock<span>View</span></b><small>v0.3 · escalas Y indep · cursor↔GPS</small></div>
+  <div class="brand"><b>Paddock<span>View</span></b><small>v0.4 · zoom táctil</small></div>
   <div class="spacer"></div>
   <label class="filebtn"><button class="primary" onclick="document.getElementById('file').click()">Cargar CSV</button></label>
   <input type="file" id="file" accept=".csv,.txt" onchange="loadFile(event)">
@@ -123,8 +124,11 @@
     </div>
 
     <div class="card" id="plotcard" style="display:none">
-      <h2 id="plottitle">Canales vs tiempo</h2>
-      <div id="plot"></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <h2 id="plottitle" style="flex:1;margin:0">Canales vs tiempo</h2>
+        <button onclick="resetZoom()" style="padding:5px 11px;font-size:12px">⤢ Reset zoom</button>
+      </div>
+      <div id="plot" style="margin-top:6px"></div>
     </div>
 
     <div class="maprow" id="maprow" style="display:none">
@@ -448,6 +452,64 @@ function markGPS(rowIdx){
 /* ---------- Utilidades ---------- */
 function status(msg){document.getElementById('status').innerHTML=msg;}
 window.addEventListener('resize',()=>{if(DATA){buildPlot();drawGPS();}});
+
+/* ---------- Zoom: reset + gestos táctiles ---------- */
+function resetZoom(){
+  if(!plot)return;
+  const xs=plot.data[0];
+  plot.setScale('x',{min:xs[0],max:xs[xs.length-1]});
+}
+
+function initPlotTouch(){
+  const host=document.getElementById('plot');
+  let pinch=null, lastTap=0;
+
+  host.addEventListener('touchstart',e=>{
+    if(e.touches.length===2 && plot){
+      e.preventDefault();
+      const a=e.touches[0], b=e.touches[1];
+      const rect=plot.over.getBoundingClientRect();
+      pinch={
+        dist:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),
+        midClient:(a.clientX+b.clientX)/2,
+        min:plot.scales.x.min, max:plot.scales.x.max,
+        rectLeft:rect.left, rectW:rect.width||1
+      };
+    }
+  },{passive:false});
+
+  host.addEventListener('touchmove',e=>{
+    if(e.touches.length===2 && plot && pinch){
+      e.preventDefault();
+      const a=e.touches[0], b=e.touches[1];
+      const dist=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+      const midClient=(a.clientX+b.clientX)/2;
+      const range=pinch.max-pinch.min;
+      const fracStart=(pinch.midClient-pinch.rectLeft)/pinch.rectW;
+      const anchor=pinch.min+fracStart*range;
+      const factor=pinch.dist/Math.max(1,dist);      // separar dedos -> zoom in
+      let newRange=range*factor;
+      const panVal=((midClient-pinch.midClient)/pinch.rectW)*newRange; // mover dedos -> pan
+      let newMin=anchor-fracStart*newRange-panVal;
+      let newMax=newMin+newRange;
+      // no dejar salir del rango total de datos
+      const xs=plot.data[0], fLo=xs[0], fHi=xs[xs.length-1];
+      if(newMax-newMin>=fHi-fLo){ newMin=fLo; newMax=fHi; }
+      else { if(newMin<fLo){newMax+=fLo-newMin;newMin=fLo;} if(newMax>fHi){newMin-=newMax-fHi;newMax=fHi;} }
+      plot.setScale('x',{min:newMin,max:newMax});
+    }
+  },{passive:false});
+
+  host.addEventListener('touchend',e=>{
+    if(e.touches.length<2) pinch=null;
+    if(e.touches.length===0){                         // doble toque = reset
+      const now=Date.now();
+      if(now-lastTap<300) resetZoom();
+      lastTap=now;
+    }
+  });
+}
+initPlotTouch();
 
 /* ---------- Generador de datos demo (3 vueltas de un óvalo) ---------- */
 function loadDemo(){
