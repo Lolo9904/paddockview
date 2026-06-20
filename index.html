@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0e1116">
+<link rel="manifest" href="manifest.json">
+<title>PaddockView · Telemetría</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/uPlot/1.6.31/uPlot.min.css">
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+    --ink:#e6edf3; --muted:#8b98a8; --amber:#ff9e3d; --cyan:#3ddbd9;
+    --grid:#222a34; --ok:#56d364; --bad:#f06d62;
+    --mono:"SFMono-Regular",ui-monospace,"Cascadia Code","Consolas",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-tap-highlight-color:transparent; overscroll-behavior:none;
+  }
+  header{
+    display:flex;align-items:center;gap:14px;padding:12px 16px;
+    border-bottom:1px solid var(--line);background:var(--panel);
+    padding-top:calc(12px + env(safe-area-inset-top));
+  }
+  .brand{display:flex;align-items:baseline;gap:9px}
+  .brand b{font-weight:700;letter-spacing:.5px;font-size:17px}
+  .brand b span{color:var(--amber)}
+  .brand small{color:var(--muted);font-size:11px;font-family:var(--mono)}
+  header .spacer{flex:1}
+  button{
+    font:inherit;color:var(--ink);background:var(--panel2);
+    border:1px solid var(--line);border-radius:9px;padding:9px 14px;
+    cursor:pointer;font-size:14px;font-weight:600;
+  }
+  button:active{background:#26303b}
+  button.primary{background:var(--amber);color:#10130f;border-color:var(--amber)}
+  .hint{color:var(--muted);font-size:13px;padding:8px 16px;border-bottom:1px solid var(--line);font-family:var(--mono)}
+  main{display:grid;grid-template-columns:230px 1fr;height:calc(100% - 58px)}
+  @media(max-width:760px){main{grid-template-columns:1fr;height:auto}}
+  .side{border-right:1px solid var(--line);background:var(--panel);overflow:auto;padding:14px}
+  .side h3{margin:0 0 10px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+  .side .group{margin-bottom:22px}
+  .chk{display:flex;align-items:center;gap:9px;padding:6px 4px;border-radius:7px;cursor:pointer;font-size:14px}
+  .chk:hover{background:var(--panel2)}
+  .chk input{accent-color:var(--amber);width:16px;height:16px}
+  .chk .sw{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+  select{width:100%;font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:14px}
+  .content{overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .card h2{margin:0 0 4px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+  .readout{display:flex;flex-wrap:wrap;gap:6px 18px;font-family:var(--mono);font-size:13px;padding:6px 2px 2px}
+  .readout span{color:var(--muted)} .readout b{color:var(--ink)}
+  #plot{width:100%}
+  .maprow{display:grid;grid-template-columns:1fr 280px;gap:14px}
+  @media(max-width:760px){.maprow{grid-template-columns:1fr}}
+  #gps{width:100%;height:320px;display:block;background:#0a0d11;border-radius:8px;touch-action:none}
+  .laps{font-family:var(--mono);font-size:13px;max-height:320px;overflow:auto}
+  .laps table{width:100%;border-collapse:collapse}
+  .laps td,.laps th{padding:5px 8px;text-align:right;border-bottom:1px solid var(--grid)}
+  .laps th{color:var(--muted);font-weight:600;text-align:right}
+  .laps td:first-child,.laps th:first-child{text-align:left}
+  .laps tr.best td{color:var(--ok)}
+  .empty{height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);text-align:center;padding:40px}
+  .empty div{max-width:340px}
+  .empty .big{font-size:15px;color:var(--ink);margin-bottom:8px}
+  .legend{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:6px}
+  .bar{height:8px;flex:1;border-radius:4px;background:linear-gradient(90deg,#3ddbd9,#56d364,#ff9e3d,#f06d62)}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>Paddock<span>View</span></b><small>v0 · telemetría</small></div>
+  <div class="spacer"></div>
+  <label class="filebtn"><button class="primary" onclick="document.getElementById('file').click()">Cargar CSV</button></label>
+  <input type="file" id="file" accept=".csv,.txt" onchange="loadFile(event)">
+  <button onclick="loadDemo()">Datos demo</button>
+</header>
+
+<div id="status" class="hint">Carga un CSV o pulsa <b>Datos demo</b> para ver cómo funciona.</div>
+
+<main>
+  <aside class="side" id="side" style="display:none">
+    <div class="group">
+      <h3>Canales (gráfica)</h3>
+      <div id="channels"></div>
+    </div>
+    <div class="group">
+      <h3>Vueltas</h3>
+      <div id="lapctrl"><small style="color:var(--muted);font-size:12px">Sin columna <code>lap</code> en el log.</small></div>
+    </div>
+    <div class="group">
+      <h3>Color del mapa</h3>
+      <select id="mapchan" onchange="drawGPS()"></select>
+    </div>
+  </aside>
+
+  <section class="content" id="content">
+    <div class="empty" id="welcome"><div>
+      <div class="big">Visor de telemetría de paddock</div>
+      Pensado para un vistazo rápido y cómodo entre tandas. El análisis profundo, en KartLab (PC).<br><br>
+      Pulsa <b>Datos demo</b> arriba para probarlo ahora mismo.
+    </div></div>
+
+    <div class="card" id="readcard" style="display:none">
+      <h2>Cursor</h2>
+      <div class="readout" id="readout"></div>
+    </div>
+
+    <div class="card" id="plotcard" style="display:none">
+      <h2 id="plottitle">Canales vs tiempo</h2>
+      <div id="plot"></div>
+    </div>
+
+    <div class="maprow" id="maprow" style="display:none">
+      <div class="card">
+        <h2>Traza GPS</h2>
+        <canvas id="gps"></canvas>
+        <div class="legend"><span id="lgmin">min</span><div class="bar"></div><span id="lgmax">max</span></div>
+      </div>
+      <div class="card">
+        <h2>Tiempos por vuelta</h2>
+        <div class="laps" id="laptable"><small style="color:var(--muted)">Sin datos de vuelta.</small></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/uPlot/1.6.31/uPlot.iife.min.js"></script>
+<script>
+/* ---------- Estado global ---------- */
+let DATA=null;            // {cols:[], rows:[][], byName:{name:idx}}
+let SEL=new Set();        // canales seleccionados para la gráfica
+let LAPS=null;            // [{lap, i0, i1, t0, t1, dur}]
+let SELLAPS=new Set();    // vueltas seleccionadas para overlay
+let plot=null;
+const COLORS=['#ff9e3d','#3ddbd9','#56d364','#f06d62','#b48ead','#e3c44f','#7aa2f7','#ff7eb6'];
+
+/* ---------- Parser CSV mínimo (logs de kart = numérico limpio) ---------- */
+function parseCSV(text){
+  const lines=text.replace(/\r/g,'').split('\n').filter(l=>l.trim().length);
+  const cols=lines[0].split(',').map(s=>s.trim());
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const parts=lines[i].split(',');
+    const row=parts.map(p=>{const v=parseFloat(p);return isNaN(v)?p.trim():v;});
+    if(row.length===cols.length) rows.push(row);
+  }
+  const byName={}; cols.forEach((c,i)=>byName[c.toLowerCase()]=i);
+  return {cols,rows,byName};
+}
+
+/* ---------- Detección de columnas clave ---------- */
+function find(byName,cands){for(const c of cands){if(c in byName)return byName[c];}return -1;}
+function colIndex(name){return DATA.byName[name.toLowerCase()];}
+
+/* ---------- Carga ---------- */
+function loadFile(ev){
+  const f=ev.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{try{ingest(parseCSV(r.result),f.name);}catch(e){status('Error leyendo el CSV: '+e.message);}};
+  r.readAsText(f);
+}
+
+function ingest(data,name){
+  DATA=data;
+  const tIdx=find(data.byName,['time','t','timestamp','tiempo']);
+  if(tIdx<0){status('No encuentro columna de tiempo (time / t). El eje X la necesita.');return;}
+  DATA.tIdx=tIdx;
+  DATA.latIdx=find(data.byName,['lat','latitude','latitud']);
+  DATA.lonIdx=find(data.byName,['lon','lng','longitude','longitud']);
+  DATA.lapIdx=find(data.byName,['lap','vuelta']);
+
+  // canales numéricos plotables (excluye tiempo, lat, lon, lap)
+  const skip=new Set([tIdx,DATA.latIdx,DATA.lonIdx,DATA.lapIdx]);
+  DATA.channels=data.cols.map((c,i)=>i).filter(i=>!skip.has(i) && typeof data.rows[0][i]==='number');
+
+  SEL=new Set(DATA.channels.slice(0,3)); // primeros 3 por defecto
+  buildChannelList();
+  buildLapControls();
+  buildMapSelect();
+
+  document.getElementById('side').style.display='';
+  document.getElementById('welcome').style.display='none';
+  document.getElementById('readcard').style.display='';
+  document.getElementById('plotcard').style.display='';
+  document.getElementById('maprow').style.display=(DATA.latIdx>=0&&DATA.lonIdx>=0)?'grid':'none';
+  status(`<b>${name}</b> · ${data.rows.length.toLocaleString()} muestras · ${DATA.channels.length} canales`+(LAPS?` · ${LAPS.length} vueltas`:''));
+  render();
+}
+
+/* ---------- Panel de canales ---------- */
+function buildChannelList(){
+  const el=document.getElementById('channels'); el.innerHTML='';
+  DATA.channels.forEach(i=>{
+    const ci=DATA.channels.indexOf(i);
+    const id='ch'+i;
+    const div=document.createElement('label'); div.className='chk';
+    div.innerHTML=`<input type="checkbox" id="${id}" ${SEL.has(i)?'checked':''}>
+      <span class="sw" style="background:${COLORS[ci%COLORS.length]}"></span>${DATA.cols[i]}`;
+    div.querySelector('input').onchange=e=>{e.target.checked?SEL.add(i):SEL.delete(i);render();};
+    el.appendChild(div);
+  });
+}
+
+/* ---------- Vueltas ---------- */
+function buildLapControls(){
+  const el=document.getElementById('lapctrl');
+  if(DATA.lapIdx<0){LAPS=null;el.innerHTML='<small style="color:var(--muted);font-size:12px">Sin columna <code>lap</code>.</small>';return;}
+  // detectar vueltas por cambio de valor en columna lap
+  LAPS=[]; const rows=DATA.rows, L=DATA.lapIdx, T=DATA.tIdx;
+  let start=0;
+  for(let i=1;i<=rows.length;i++){
+    if(i===rows.length || rows[i][L]!==rows[start][L]){
+      const t0=rows[start][T], t1=rows[i-1][T];
+      LAPS.push({lap:rows[start][L],i0:start,i1:i-1,t0,t1,dur:t1-t0});
+      start=i;
+    }
+  }
+  SELLAPS=new Set(LAPS.slice(0,2).map(l=>l.lap)); // primeras 2 por defecto
+  el.innerHTML='';
+  const ov=document.createElement('label'); ov.className='chk';
+  ov.innerHTML=`<input type="checkbox" id="overlay"> Overlay (alinea vueltas)`;
+  ov.querySelector('input').onchange=()=>render();
+  el.appendChild(ov);
+  LAPS.forEach(l=>{
+    const div=document.createElement('label'); div.className='chk';
+    div.innerHTML=`<input type="checkbox" ${SELLAPS.has(l.lap)?'checked':''}> Vuelta ${l.lap} · ${l.dur.toFixed(2)}s`;
+    div.querySelector('input').onchange=e=>{e.target.checked?SELLAPS.add(l.lap):SELLAPS.delete(l.lap);render();};
+    el.appendChild(div);
+  });
+  buildLapTable();
+}
+
+function buildLapTable(){
+  const el=document.getElementById('laptable');
+  if(!LAPS){el.innerHTML='<small style="color:var(--muted)">Sin datos de vuelta.</small>';return;}
+  const best=Math.min(...LAPS.map(l=>l.dur));
+  let h='<table><tr><th>Vuelta</th><th>Tiempo</th><th>Δ best</th></tr>';
+  LAPS.forEach(l=>{
+    h+=`<tr class="${l.dur===best?'best':''}"><td>${l.lap}</td><td>${l.dur.toFixed(3)}</td><td>${l.dur===best?'—':'+'+(l.dur-best).toFixed(3)}</td></tr>`;
+  });
+  el.innerHTML=h+'</table>';
+}
+
+/* ---------- Mapa: selector de canal de color ---------- */
+function buildMapSelect(){
+  const s=document.getElementById('mapchan'); s.innerHTML='';
+  DATA.channels.forEach(i=>{const o=document.createElement('option');o.value=i;o.textContent=DATA.cols[i];s.appendChild(o);});
+}
+
+/* ---------- Render principal ---------- */
+function render(){ buildPlot(); drawGPS(); }
+
+function buildPlot(){
+  const overlay=document.getElementById('overlay')?.checked && LAPS;
+  const sel=[...SEL];
+  const title=document.getElementById('plottitle');
+
+  let series, data;
+  if(overlay){
+    title.textContent='Overlay de vueltas (tiempo dentro de vuelta)';
+    // X = tiempo relativo dentro de la vuelta; una serie por (vuelta × canal)
+    const laps=LAPS.filter(l=>SELLAPS.has(l.lap));
+    // base X: el de la vuelta más larga
+    let maxN=0,baseLap=laps[0];
+    laps.forEach(l=>{const n=l.i1-l.i0+1; if(n>maxN){maxN=n;baseLap=l;}});
+    const xs=[]; for(let k=0;k<maxN;k++){const i=baseLap.i0+k; xs.push(DATA.rows[i][DATA.tIdx]-baseLap.t0);}
+    data=[xs]; series=[{}];
+    laps.forEach((l,li)=>{
+      sel.forEach((ci)=>{
+        const arr=new Array(maxN).fill(null);
+        for(let k=0;k<=l.i1-l.i0 && k<maxN;k++) arr[k]=DATA.rows[l.i0+k][ci];
+        data.push(arr);
+        series.push({label:`V${l.lap} ${DATA.cols[ci]}`,stroke:COLORS[(li+ci)%COLORS.length],width:1.5});
+      });
+    });
+  } else {
+    title.textContent='Canales vs tiempo';
+    const xs=DATA.rows.map(r=>r[DATA.tIdx]);
+    data=[xs]; series=[{}];
+    sel.forEach(ci=>{
+      data.push(DATA.rows.map(r=>r[ci]));
+      const idx=DATA.channels.indexOf(ci);
+      series.push({label:DATA.cols[ci],stroke:COLORS[idx%COLORS.length],width:1.5});
+    });
+  }
+
+  if(plot){plot.destroy();plot=null;}
+  const w=document.getElementById('plot').clientWidth||800;
+  const opts={
+    width:w,height:340,
+    cursor:{drag:{x:true,y:false},points:{size:6}},
+    scales:{x:{time:false}},
+    axes:[
+      {stroke:'#8b98a8',grid:{stroke:'#222a34'},ticks:{stroke:'#222a34'}},
+      {stroke:'#8b98a8',grid:{stroke:'#222a34'},ticks:{stroke:'#222a34'}}
+    ],
+    legend:{show:false},
+    series,
+    hooks:{setCursor:[u=>updateReadout(u)]}
+  };
+  plot=new uPlot(opts,data,document.getElementById('plot'));
+}
+
+function updateReadout(u){
+  const el=document.getElementById('readout');
+  const idx=u.cursor.idx;
+  if(idx==null){el.innerHTML='<span>Mueve el cursor sobre la gráfica…</span>';return;}
+  let h=`<span>t</span><b>${u.data[0][idx]?.toFixed(2)??'-'}s</b>`;
+  for(let s=1;s<u.series.length;s++){
+    h+=`<span>${u.series[s].label}</span><b>${u.data[s][idx]?.toFixed(1)??'-'}</b>`;
+  }
+  el.innerHTML=h;
+}
+
+/* ---------- Traza GPS en canvas (offline, sin tiles) ---------- */
+function drawGPS(){
+  if(DATA.latIdx<0||DATA.lonIdx<0)return;
+  const cv=document.getElementById('gps'), ctx=cv.getContext('2d');
+  const rect=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  cv.width=rect.width*dpr; cv.height=rect.height*dpr; ctx.scale(dpr,dpr);
+  const W=rect.width,H=rect.height,pad=18;
+  ctx.clearRect(0,0,W,H);
+
+  const rows=DATA.rows, La=DATA.latIdx, Lo=DATA.lonIdx;
+  let minLa=Infinity,maxLa=-Infinity,minLo=Infinity,maxLo=-Infinity;
+  rows.forEach(r=>{minLa=Math.min(minLa,r[La]);maxLa=Math.max(maxLa,r[La]);minLo=Math.min(minLo,r[Lo]);maxLo=Math.max(maxLo,r[Lo]);});
+  const sLa=(maxLa-minLa)||1e-6, sLo=(maxLo-minLo)||1e-6;
+  const sc=Math.min((W-2*pad)/sLo,(H-2*pad)/sLa);
+  const ox=(W-sLo*sc)/2, oy=(H-sLa*sc)/2;
+  const X=lo=>ox+(lo-minLo)*sc;
+  const Y=la=>H-(oy+(la-minLa)*sc); // invertir Y (norte arriba)
+
+  // canal de color
+  const ci=parseInt(document.getElementById('mapchan').value);
+  let cmin=Infinity,cmax=-Infinity;
+  rows.forEach(r=>{const v=r[ci];cmin=Math.min(cmin,v);cmax=Math.max(cmax,v);});
+  document.getElementById('lgmin').textContent=cmin.toFixed(0);
+  document.getElementById('lgmax').textContent=cmax.toFixed(0);
+  const color=v=>{
+    const t=(v-cmin)/((cmax-cmin)||1);
+    const stops=[[61,219,217],[86,211,100],[255,158,61],[240,109,98]];
+    const seg=Math.min(stops.length-2,Math.floor(t*(stops.length-1)));
+    const f=t*(stops.length-1)-seg;
+    const c=stops[seg].map((a,k)=>Math.round(a+(stops[seg+1][k]-a)*f));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  };
+
+  ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
+  for(let i=1;i<rows.length;i++){
+    ctx.strokeStyle=color(rows[i][ci]);
+    ctx.beginPath();
+    ctx.moveTo(X(rows[i-1][Lo]),Y(rows[i-1][La]));
+    ctx.lineTo(X(rows[i][Lo]),Y(rows[i][La]));
+    ctx.stroke();
+  }
+}
+
+/* ---------- Utilidades ---------- */
+function status(msg){document.getElementById('status').innerHTML=msg;}
+window.addEventListener('resize',()=>{if(DATA){buildPlot();drawGPS();}});
+
+/* ---------- Generador de datos demo (3 vueltas de un óvalo) ---------- */
+function loadDemo(){
+  const cols=['time','lap','lat','lon','speed','rpm','throttle','ay'];
+  const rows=[]; let t=0; const dt=0.04; // 25 Hz
+  const cLat=41.234, cLon=1.731, R=0.0016;
+  for(let lap=1;lap<=3;lap++){
+    const N=Math.round((520+lap*8)/dt/10); // vueltas ligeramente distintas
+    for(let k=0;k<N;k++){
+      const ph=k/N*2*Math.PI;
+      // óvalo: estiramos en X
+      const lat=cLat+R*Math.sin(ph);
+      const lon=cLon+R*1.7*Math.cos(ph);
+      // velocidad: alta en rectas, baja en curvas
+      const corner=Math.abs(Math.cos(ph)); // ~1 en curvas de los extremos
+      const base=95-55*Math.pow(1-corner,1.3);
+      const speed=Math.max(28,base+ (lap===2?6:0) + Math.sin(ph*4)*2);
+      const rpm=4000+speed*75;
+      const throttle=Math.max(0,Math.min(100,(speed-30)*1.6));
+      const ay=Math.cos(ph)*1.4*(speed/90);
+      rows.push([+t.toFixed(3),lap,+lat.toFixed(6),+lon.toFixed(6),+speed.toFixed(1),Math.round(rpm),+throttle.toFixed(0),+ay.toFixed(2)]);
+      t+=dt;
+    }
+  }
+  const byName={}; cols.forEach((c,i)=>byName[c.toLowerCase()]=i);
+  ingest({cols,rows,byName},'demo_oval_3laps.csv');
+}
+
+/* ---------- Service worker (para offline / PWA) ---------- */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
