@@ -78,7 +78,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><b>Paddock<span>View</span></b><small>v0.2 · uPlot embebido</small></div>
+  <div class="brand"><b>Paddock<span>View</span></b><small>v0.3 · escalas Y indep · cursor↔GPS</small></div>
   <div class="spacer"></div>
   <label class="filebtn"><button class="primary" onclick="document.getElementById('file').click()">Cargar CSV</button></label>
   <input type="file" id="file" accept=".csv,.txt" onchange="loadFile(event)">
@@ -96,6 +96,13 @@
     <div class="group">
       <h3>Vueltas</h3>
       <div id="lapctrl"><small style="color:var(--muted);font-size:12px">Sin columna <code>lap</code> en el log.</small></div>
+    </div>
+    <div class="group">
+      <h3>Eje X</h3>
+      <select id="xmode" onchange="setXMode(this.value)">
+        <option value="time">Tiempo (s)</option>
+        <option value="dist">Distancia (m)</option>
+      </select>
     </div>
     <div class="group">
       <h3>Color del mapa</h3>
@@ -145,7 +152,7 @@ let DATA=null;            // {cols:[], rows:[][], byName:{name:idx}}
 let SEL=new Set();        // canales seleccionados para la gráfica
 let LAPS=null;            // [{lap, i0, i1, t0, t1, dur}]
 let SELLAPS=new Set();    // vueltas seleccionadas para overlay
-let plot=null;
+let plot=null, IDXMAP=null, GPS=null, XMODE='time';
 const COLORS=['#ff9e3d','#3ddbd9','#56d364','#f06d62','#b48ead','#e3c44f','#7aa2f7','#ff7eb6'];
 
 /* ---------- Parser CSV mínimo (logs de kart = numérico limpio) ---------- */
@@ -187,10 +194,13 @@ function ingest(data,name){
   const skip=new Set([tIdx,DATA.latIdx,DATA.lonIdx,DATA.lapIdx]);
   DATA.channels=data.cols.map((c,i)=>i).filter(i=>!skip.has(i) && typeof data.rows[0][i]==='number');
 
-  SEL=new Set(DATA.channels.slice(0,3)); // primeros 3 por defecto
+  DATA.dist=computeDistance(DATA);
+  SEL=new Set(DATA.channels); // todas las variables por defecto
+  XMODE='time';
   buildChannelList();
   buildLapControls();
   buildMapSelect();
+  buildXMode();
 
   document.getElementById('side').style.display='';
   document.getElementById('welcome').style.display='none';
@@ -261,6 +271,39 @@ function buildMapSelect(){
   DATA.channels.forEach(i=>{const o=document.createElement('option');o.value=i;o.textContent=DATA.cols[i];s.appendChild(o);});
 }
 
+/* ---------- Distancia recorrida (para eje X en distancia) ---------- */
+function computeDistance(d){
+  const rows=d.rows, T=d.tIdx, La=d.latIdx, Lo=d.lonIdx;
+  const sp=find(d.byName,['speed','vel','velocidad','gps_speed','v']);
+  const out=new Array(rows.length).fill(0);
+  if(La>=0&&Lo>=0){            // preferido: haversine sobre GPS
+    const R=6371000;
+    for(let i=1;i<rows.length;i++){
+      const la1=rows[i-1][La]*Math.PI/180, la2=rows[i][La]*Math.PI/180;
+      const dLa=la2-la1, dLo=(rows[i][Lo]-rows[i-1][Lo])*Math.PI/180;
+      const a=Math.sin(dLa/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLo/2)**2;
+      out[i]=out[i-1]+2*R*Math.asin(Math.min(1,Math.sqrt(a)));
+    }
+    return {arr:out,ok:true,src:'gps'};
+  }
+  if(sp>=0){                   // alternativa: integrar velocidad (km/h -> m/s)
+    for(let i=1;i<rows.length;i++){
+      const dt=rows[i][T]-rows[i-1][T];
+      out[i]=out[i-1]+Math.max(0,(rows[i-1][sp]/3.6)*dt);
+    }
+    return {arr:out,ok:true,src:'speed'};
+  }
+  return {arr:null,ok:false};
+}
+
+/* ---------- Conmutador tiempo / distancia ---------- */
+function buildXMode(){
+  const s=document.getElementById('xmode');
+  s.querySelector('option[value="dist"]').disabled=!(DATA.dist&&DATA.dist.ok);
+  s.value='time';
+}
+function setXMode(v){ XMODE=v; render(); }
+
 /* ---------- Render principal ---------- */
 function render(){
   try{ buildPlot(); }catch(e){ status("Error en la grafica: "+e.message); console.error(e); }
@@ -271,33 +314,39 @@ function buildPlot(){
   const overlay=document.getElementById('overlay')?.checked && LAPS;
   const sel=[...SEL];
   const title=document.getElementById('plottitle');
+  const useDist = XMODE==='dist' && DATA.dist && DATA.dist.ok;
+  const xval = i => useDist ? DATA.dist.arr[i] : DATA.rows[i][DATA.tIdx];
+  const xlabel = useDist ? 'distancia (m)' : 'tiempo (s)';
+
+  if(sel.length===0){ if(plot){plot.destroy();plot=null;} IDXMAP=null; title.textContent='Selecciona al menos un canal'; return; }
 
   let series, data;
   if(overlay){
-    title.textContent='Overlay de vueltas (tiempo dentro de vuelta)';
-    // X = tiempo relativo dentro de la vuelta; una serie por (vuelta × canal)
+    title.textContent='Overlay de vueltas · '+xlabel+' dentro de vuelta';
     const laps=LAPS.filter(l=>SELLAPS.has(l.lap));
-    // base X: el de la vuelta más larga
     let maxN=0,baseLap=laps[0];
     laps.forEach(l=>{const n=l.i1-l.i0+1; if(n>maxN){maxN=n;baseLap=l;}});
-    const xs=[]; for(let k=0;k<maxN;k++){const i=baseLap.i0+k; xs.push(DATA.rows[i][DATA.tIdx]-baseLap.t0);}
+    const x0=xval(baseLap.i0);
+    const xs=[]; IDXMAP=[];
+    for(let k=0;k<maxN;k++){ xs.push(xval(baseLap.i0+k)-x0); IDXMAP.push(baseLap.i0+k); }
     data=[xs]; series=[{}];
     laps.forEach((l,li)=>{
       sel.forEach((ci)=>{
         const arr=new Array(maxN).fill(null);
         for(let k=0;k<=l.i1-l.i0 && k<maxN;k++) arr[k]=DATA.rows[l.i0+k][ci];
         data.push(arr);
-        series.push({label:`V${l.lap} ${DATA.cols[ci]}`,stroke:COLORS[(li+ci)%COLORS.length],width:1.5});
+        series.push({label:`V${l.lap} ${DATA.cols[ci]}`,stroke:COLORS[(li+ci)%COLORS.length],width:1.5,scale:DATA.cols[ci]});
       });
     });
   } else {
-    title.textContent='Canales vs tiempo';
-    const xs=DATA.rows.map(r=>r[DATA.tIdx]);
+    title.textContent='Canales vs '+xlabel;
+    const xs=DATA.rows.map((_,i)=>xval(i));
+    IDXMAP=DATA.rows.map((_,i)=>i);
     data=[xs]; series=[{}];
     sel.forEach(ci=>{
       data.push(DATA.rows.map(r=>r[ci]));
       const idx=DATA.channels.indexOf(ci);
-      series.push({label:DATA.cols[ci],stroke:COLORS[idx%COLORS.length],width:1.5});
+      series.push({label:DATA.cols[ci],stroke:COLORS[idx%COLORS.length],width:1.5,scale:DATA.cols[ci]});
     });
   }
 
@@ -306,10 +355,10 @@ function buildPlot(){
   const opts={
     width:w,height:340,
     cursor:{drag:{x:true,y:false},points:{size:6}},
-    scales:{x:{time:false}},
+    scales:{x:{time:false}},   // cada canal usa su propia escala Y (auto-rango)
     axes:[
-      {stroke:'#8b98a8',grid:{stroke:'#222a34'},ticks:{stroke:'#222a34'}},
-      {stroke:'#8b98a8',grid:{stroke:'#222a34'},ticks:{stroke:'#222a34'}}
+      {scale:'x',stroke:'#8b98a8',grid:{stroke:'#222a34'},ticks:{stroke:'#222a34'}},
+      {show:false}             // sin eje Y compartido: los valores se leen en el cursor
     ],
     legend:{show:false},
     series,
@@ -321,22 +370,24 @@ function buildPlot(){
 function updateReadout(u){
   const el=document.getElementById('readout');
   const idx=u.cursor.idx;
-  if(idx==null){el.innerHTML='<span>Mueve el cursor sobre la gráfica…</span>';return;}
-  let h=`<span>t</span><b>${u.data[0][idx]?.toFixed(2)??'-'}s</b>`;
+  if(idx==null){el.innerHTML='<span>Mueve el cursor sobre la gráfica…</span>';markGPS(null);return;}
+  const useDist = XMODE==='dist' && DATA.dist && DATA.dist.ok;
+  const xu=useDist?'m':'s', xl=useDist?'d':'t';
+  let h=`<span>${xl}</span><b>${u.data[0][idx]?.toFixed(useDist?0:2)??'-'}${xu}</b>`;
   for(let s=1;s<u.series.length;s++){
     h+=`<span>${u.series[s].label}</span><b>${u.data[s][idx]?.toFixed(1)??'-'}</b>`;
   }
   el.innerHTML=h;
+  markGPS(IDXMAP?IDXMAP[idx]:null);
 }
 
 /* ---------- Traza GPS en canvas (offline, sin tiles) ---------- */
 function drawGPS(){
-  if(DATA.latIdx<0||DATA.lonIdx<0)return;
-  const cv=document.getElementById('gps'), ctx=cv.getContext('2d');
+  if(DATA.latIdx<0||DATA.lonIdx<0){GPS=null;return;}
+  const cv=document.getElementById('gps');
   const rect=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
-  cv.width=rect.width*dpr; cv.height=rect.height*dpr; ctx.scale(dpr,dpr);
+  cv.width=rect.width*dpr; cv.height=rect.height*dpr;
   const W=rect.width,H=rect.height,pad=18;
-  ctx.clearRect(0,0,W,H);
 
   const rows=DATA.rows, La=DATA.latIdx, Lo=DATA.lonIdx;
   let minLa=Infinity,maxLa=-Infinity,minLo=Infinity,maxLo=-Infinity;
@@ -362,13 +413,35 @@ function drawGPS(){
     return `rgb(${c[0]},${c[1]},${c[2]})`;
   };
 
-  ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
+  // dibujamos la traza en un canvas OFFSCREEN; luego solo repintamos el marcador
+  const off=document.createElement('canvas'); off.width=cv.width; off.height=cv.height;
+  const octx=off.getContext('2d'); octx.scale(dpr,dpr);
+  octx.lineWidth=3; octx.lineCap='round'; octx.lineJoin='round';
   for(let i=1;i<rows.length;i++){
-    ctx.strokeStyle=color(rows[i][ci]);
-    ctx.beginPath();
-    ctx.moveTo(X(rows[i-1][Lo]),Y(rows[i-1][La]));
-    ctx.lineTo(X(rows[i][Lo]),Y(rows[i][La]));
-    ctx.stroke();
+    octx.strokeStyle=color(rows[i][ci]);
+    octx.beginPath();
+    octx.moveTo(X(rows[i-1][Lo]),Y(rows[i-1][La]));
+    octx.lineTo(X(rows[i][Lo]),Y(rows[i][La]));
+    octx.stroke();
+  }
+  GPS={cv,off,X,Y,dpr};
+  markGPS(null); // pinta la traza base
+}
+
+/* ---------- Marcador del cursor sobre el mapa GPS ---------- */
+function markGPS(rowIdx){
+  if(!GPS)return;
+  const {cv,off,X,Y,dpr}=GPS;
+  const ctx=cv.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.drawImage(off,0,0);
+  if(rowIdx!=null && DATA.rows[rowIdx]){
+    const r=DATA.rows[rowIdx];
+    const x=X(r[DATA.lonIdx])*dpr, y=Y(r[DATA.latIdx])*dpr;
+    ctx.beginPath(); ctx.arc(x,y,7*dpr,0,2*Math.PI);
+    ctx.fillStyle='#ffffff'; ctx.fill();
+    ctx.lineWidth=3*dpr; ctx.strokeStyle='#0e1116'; ctx.stroke();
   }
 }
 
@@ -378,24 +451,24 @@ window.addEventListener('resize',()=>{if(DATA){buildPlot();drawGPS();}});
 
 /* ---------- Generador de datos demo (3 vueltas de un óvalo) ---------- */
 function loadDemo(){
-  const cols=['time','lap','lat','lon','speed','rpm','throttle','ay'];
+  const cols=['time','lap','lat','lon','speed','rpm','throttle','brake','steering','ay'];
   const rows=[]; let t=0; const dt=0.04; // 25 Hz
   const cLat=41.234, cLon=1.731, R=0.0016;
   for(let lap=1;lap<=3;lap++){
     const N=Math.round((520+lap*8)/dt/10); // vueltas ligeramente distintas
     for(let k=0;k<N;k++){
       const ph=k/N*2*Math.PI;
-      // óvalo: estiramos en X
       const lat=cLat+R*Math.sin(ph);
       const lon=cLon+R*1.7*Math.cos(ph);
-      // velocidad: alta en rectas, baja en curvas
-      const corner=Math.abs(Math.cos(ph)); // ~1 en curvas de los extremos
+      const corner=Math.abs(Math.cos(ph));
       const base=95-55*Math.pow(1-corner,1.3);
-      const speed=Math.max(28,base+ (lap===2?6:0) + Math.sin(ph*4)*2);
+      const speed=Math.max(28,base+(lap===2?6:0)+Math.sin(ph*4)*2);
       const rpm=4000+speed*75;
       const throttle=Math.max(0,Math.min(100,(speed-30)*1.6));
+      const brake=Math.max(0,Math.min(100,(45-throttle)*2.2));   // 0-100
+      const steering=+(Math.cos(ph)*78).toFixed(1);              // -78..78 grados
       const ay=Math.cos(ph)*1.4*(speed/90);
-      rows.push([+t.toFixed(3),lap,+lat.toFixed(6),+lon.toFixed(6),+speed.toFixed(1),Math.round(rpm),+throttle.toFixed(0),+ay.toFixed(2)]);
+      rows.push([+t.toFixed(3),lap,+lat.toFixed(6),+lon.toFixed(6),+speed.toFixed(1),Math.round(rpm),+throttle.toFixed(0),+brake.toFixed(0),steering,+ay.toFixed(2)]);
       t+=dt;
     }
   }

@@ -1,7 +1,7 @@
 /* Service worker mínimo: cachea la app para uso offline.
    Cuando cambies index.html, sube el número de versión (v1 -> v2)
    para que el iPad recoja la versión nueva. */
-const CACHE = 'paddockview-v2';
+const CACHE = 'paddockview-v3';
 const ASSETS = [
   './',
   './index.html',
