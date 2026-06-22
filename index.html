@@ -92,7 +92,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><b>Paddock<span>View</span></b><small>v0.6 · escala datos/auto/manual</small></div>
+  <div class="brand"><b>Paddock<span>View</span></b><small>v0.7 · ajustes guardados</small></div>
   <div class="spacer"></div>
   <label class="filebtn"><button class="primary" onclick="document.getElementById('file').click()">Cargar CSV</button></label>
   <input type="file" id="file" accept=".csv,.txt" onchange="loadFile(event)">
@@ -241,15 +241,16 @@ function ingest(data,name){
     for(const r of DATA.rows){const v=r[ci]; if(typeof v==='number'){ if(v<mn)mn=v; if(v>mx)mx=v; }}
     DATA.glob[DATA.cols[ci]]={min:mn,max:mx};
   });
-  RANGES={};                       // rangos manuales se reinician por log
+  RANGES={};                       // base; loadSettings restaura lo guardado
   YMODE='data';                    // por defecto: escala = mín/máx reales (fijo)
+  loadSettings();                  // restaura rangos manuales y modo Y guardados
   SEL=new Set(DATA.channels); // todas las variables por defecto
   XMODE='time';
   buildChannelList();
   buildLapControls();
   buildMapSelect();
   buildXMode();
-  document.getElementById('ymode').value='data';
+  document.getElementById('ymode').value=YMODE;
 
   document.getElementById('side').style.display='';
   document.getElementById('welcome').style.display='none';
@@ -358,6 +359,21 @@ function render(){
   try{ buildPlot(); }catch(e){ status("Error en la grafica: "+e.message); console.error(e); }
   try{ drawGPS(); }catch(e){ console.error(e); }
   if(fsOpen()){ try{ buildScaleControls(); buildFSPlot(); }catch(e){ console.error(e); } }
+}
+
+/* ---------- Persistencia de ajustes (localStorage) ----------
+   Guarda rangos manuales (por nombre de canal) y el modo de escala Y.
+   Envuelto en try/catch: si el entorno bloquea localStorage, degrada sin romper. */
+const LSKEY='paddockview.settings.v1';
+function saveSettings(){
+  try{ localStorage.setItem(LSKEY, JSON.stringify({ranges:RANGES, ymode:YMODE})); }catch(e){}
+}
+function loadSettings(){
+  try{
+    const s=JSON.parse(localStorage.getItem(LSKEY)||'{}');
+    if(s.ranges && typeof s.ranges==='object') RANGES=s.ranges;
+    if(s.ymode==='data'||s.ymode==='auto') YMODE=s.ymode;
+  }catch(e){}
 }
 
 /* ---------- Rango de cada escala ----------
@@ -487,7 +503,8 @@ function buildScaleControls(){
     `<select id="ymode_fs" onchange="setYMode(this.value)">`+
     `<option value="data">Datos (mín/máx reales)</option>`+
     `<option value="auto">Auto (dinámico al zoom)</option></select>`+
-    `<span style="color:var(--muted)">· o fija min/max abajo</span>`;
+    `<span style="color:var(--muted)">· o fija min/max abajo</span>`+
+    `<button onclick="resetScales()" style="padding:3px 9px;font-size:11px">Restablecer</button>`;
   host.appendChild(gctl);
   gctl.querySelector('select').value=YMODE;
 
@@ -509,6 +526,7 @@ function buildScaleControls(){
       const ch=inp.dataset.ch, k=inp.dataset.k;
       RANGES[ch]=RANGES[ch]||{};
       RANGES[ch][k]= inp.value===''?null:parseFloat(inp.value);
+      saveSettings();               // persiste el cambio
       buildFSPlot();                // refresca pantalla completa
       if(plot) buildPlot();         // y la vista compacta (escalas compartidas)
     };
@@ -518,10 +536,20 @@ function buildScaleControls(){
 /* ---------- Modo global de escala Y (sincroniza ambos selectores) ---------- */
 function setYMode(v){
   YMODE=v;
+  saveSettings();
   const a=document.getElementById('ymode'), b=document.getElementById('ymode_fs');
   if(a)a.value=v; if(b)b.value=v;
   if(plot) buildPlot();
   if(fsOpen()){ buildScaleControls(); buildFSPlot(); }  // refresca placeholders y gráfica
+}
+
+/* ---------- Restablecer todas las escalas a por defecto ---------- */
+function resetScales(){
+  RANGES={}; YMODE='data';
+  saveSettings();
+  const a=document.getElementById('ymode'); if(a)a.value='data';
+  if(plot) buildPlot();
+  if(fsOpen()){ buildScaleControls(); buildFSPlot(); }
 }
 
 function openFS(){
