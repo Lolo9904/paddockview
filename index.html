@@ -92,7 +92,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><b>Paddock<span>View</span></b><small>v0.5 · pantalla completa + escalas</small></div>
+  <div class="brand"><b>Paddock<span>View</span></b><small>v0.6 · escala datos/auto/manual</small></div>
   <div class="spacer"></div>
   <label class="filebtn"><button class="primary" onclick="document.getElementById('file').click()">Cargar CSV</button></label>
   <input type="file" id="file" accept=".csv,.txt" onchange="loadFile(event)">
@@ -116,6 +116,13 @@
       <select id="xmode" onchange="setXMode(this.value)">
         <option value="time">Tiempo (s)</option>
         <option value="dist">Distancia (m)</option>
+      </select>
+    </div>
+    <div class="group">
+      <h3>Escala Y</h3>
+      <select id="ymode" onchange="setYMode(this.value)">
+        <option value="data">Datos (mín/máx reales)</option>
+        <option value="auto">Auto (dinámico al zoom)</option>
       </select>
     </div>
     <div class="group">
@@ -184,6 +191,7 @@ let LAPS=null;            // [{lap, i0, i1, t0, t1, dur}]
 let SELLAPS=new Set();    // vueltas seleccionadas para overlay
 let plot=null, IDXMAP=null, GPS=null, XMODE='time';
 let fsplot=null, FS_IDXMAP=null, RANGES={};   // RANGES[canal]={min,max} (null=auto)
+let YMODE='data';                              // 'data' (mín/máx reales, fijo) | 'auto' (dinámico al zoom)
 const COLORS=['#ff9e3d','#3ddbd9','#56d364','#f06d62','#b48ead','#e3c44f','#7aa2f7','#ff7eb6'];
 
 /* ---------- Parser CSV mínimo (logs de kart = numérico limpio) ---------- */
@@ -226,13 +234,22 @@ function ingest(data,name){
   DATA.channels=data.cols.map((c,i)=>i).filter(i=>!skip.has(i) && typeof data.rows[0][i]==='number');
 
   DATA.dist=computeDistance(DATA);
+  // mín/máx de cada canal sobre TODO el log (para escala fija "Datos")
+  DATA.glob={};
+  DATA.channels.forEach(ci=>{
+    let mn=Infinity,mx=-Infinity;
+    for(const r of DATA.rows){const v=r[ci]; if(typeof v==='number'){ if(v<mn)mn=v; if(v>mx)mx=v; }}
+    DATA.glob[DATA.cols[ci]]={min:mn,max:mx};
+  });
   RANGES={};                       // rangos manuales se reinician por log
+  YMODE='data';                    // por defecto: escala = mín/máx reales (fijo)
   SEL=new Set(DATA.channels); // todas las variables por defecto
   XMODE='time';
   buildChannelList();
   buildLapControls();
   buildMapSelect();
   buildXMode();
+  document.getElementById('ymode').value='data';
 
   document.getElementById('side').style.display='';
   document.getElementById('welcome').style.display='none';
@@ -343,12 +360,22 @@ function render(){
   if(fsOpen()){ try{ buildScaleControls(); buildFSPlot(); }catch(e){ console.error(e); } }
 }
 
-/* ---------- Rango de cada escala (auto o manual via RANGES) ---------- */
+/* ---------- Rango de cada escala ----------
+   Manual (algún min/max escrito) > si no, modo global YMODE:
+   'data' = mín/máx reales de todo el log (fijo, no cambia al zoom)
+   'auto' = dinámico, se ajusta a lo visible en cada zoom */
 function scaleRange(chan){
-  return (u,dataMin,dataMax)=>{
+  return (u,dMin,dMax)=>{
     const r=RANGES[chan]||{};
-    const lo=(r.min!=null&&!isNaN(r.min))?r.min:dataMin;
-    const hi=(r.max!=null&&!isNaN(r.max))?r.max:dataMax;
+    const g=(DATA.glob&&DATA.glob[chan])||{min:dMin,max:dMax};
+    const hasMin=r.min!=null&&!isNaN(r.min);
+    const hasMax=r.max!=null&&!isNaN(r.max);
+    let lo,hi;
+    if(hasMin||hasMax){                                   // manual (total o parcial)
+      lo=hasMin?r.min:(YMODE==='auto'?dMin:g.min);
+      hi=hasMax?r.max:(YMODE==='auto'?dMax:g.max);
+    } else if(YMODE==='auto'){ lo=dMin; hi=dMax; }        // dinámico al zoom
+    else { lo=g.min; hi=g.max; }                          // mín/máx reales, fijo
     return (lo===hi)?[lo-1,hi+1]:[lo,hi];
   };
 }
@@ -453,14 +480,28 @@ function buildFSPlot(){
 /* ---------- Chips de configuración de escalas ---------- */
 function buildScaleControls(){
   const host=document.getElementById('fsscales'); host.innerHTML='';
+
+  // selector global de modo de escala Y
+  const gctl=document.createElement('div'); gctl.className='fschip';
+  gctl.innerHTML=`<b>Escala Y</b>`+
+    `<select id="ymode_fs" onchange="setYMode(this.value)">`+
+    `<option value="data">Datos (mín/máx reales)</option>`+
+    `<option value="auto">Auto (dinámico al zoom)</option></select>`+
+    `<span style="color:var(--muted)">· o fija min/max abajo</span>`;
+  host.appendChild(gctl);
+  gctl.querySelector('select').value=YMODE;
+
   [...SEL].forEach(ci=>{
     const ch=DATA.cols[ci];
     const col=COLORS[DATA.channels.indexOf(ci)%COLORS.length];
     const r=RANGES[ch]||{};
+    const g=(DATA.glob&&DATA.glob[ch])||{min:0,max:0};
+    const phMin = YMODE==='auto'?'auto':fmtNum(g.min);   // muestra el valor por defecto
+    const phMax = YMODE==='auto'?'auto':fmtNum(g.max);
     const chip=document.createElement('div'); chip.className='fschip';
     chip.innerHTML=`<span class="sw" style="background:${col}"></span><b>${ch}</b>`+
-      `<label>min<input type="number" step="any" data-ch="${ch}" data-k="min" value="${r.min??''}" placeholder="auto"></label>`+
-      `<label>max<input type="number" step="any" data-ch="${ch}" data-k="max" value="${r.max??''}" placeholder="auto"></label>`;
+      `<label>min<input type="number" step="any" data-ch="${ch}" data-k="min" value="${r.min??''}" placeholder="${phMin}"></label>`+
+      `<label>max<input type="number" step="any" data-ch="${ch}" data-k="max" value="${r.max??''}" placeholder="${phMax}"></label>`;
     host.appendChild(chip);
   });
   host.querySelectorAll('input').forEach(inp=>{
@@ -472,6 +513,15 @@ function buildScaleControls(){
       if(plot) buildPlot();         // y la vista compacta (escalas compartidas)
     };
   });
+}
+
+/* ---------- Modo global de escala Y (sincroniza ambos selectores) ---------- */
+function setYMode(v){
+  YMODE=v;
+  const a=document.getElementById('ymode'), b=document.getElementById('ymode_fs');
+  if(a)a.value=v; if(b)b.value=v;
+  if(plot) buildPlot();
+  if(fsOpen()){ buildScaleControls(); buildFSPlot(); }  // refresca placeholders y gráfica
 }
 
 function openFS(){
